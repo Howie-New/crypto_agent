@@ -1,0 +1,160 @@
+{
+  "model": "Qwen3.6-35B-A3B-OptiQ-4bit",
+  "provider": "openai",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "num_runs": 3,
+  "results": [
+    {
+      "scenario": "402_detection",
+      "success": true,
+      "tool_calls": [
+        "http_request"
+      ],
+      "latency": 48.054508209228516,
+      "error": null
+    },
+    {
+      "scenario": "payment_flow",
+      "success": true,
+      "tool_calls": [
+        "http_request",
+        "web3_payment",
+        "http_request"
+      ],
+      "latency": 45.07772970199585,
+      "error": null
+    },
+    {
+      "scenario": "wallet_balance",
+      "success": true,
+      "tool_calls": [
+        "get_wallet_balance"
+      ],
+      "latency": 11.87561583518982,
+      "error": null
+    },
+    {
+      "scenario": "service_discovery",
+      "success": true,
+      "tool_calls": [
+        "discover_x402_services"
+      ],
+      "latency": 151.01228594779968,
+      "error": null
+    },
+    {
+      "scenario": "402_detection",
+      "success": false,
+      "tool_calls": [
+        "real_x402_request",
+        "check_payment_policy"
+      ],
+      "latency": 44.27332401275635,
+      "error": null
+    },
+    {
+      "scenario": "payment_flow",
+      "success": true,
+      "tool_calls": [
+        "http_request",
+        "check_payment_policy",
+        "web3_payment",
+        "http_request"
+      ],
+      "latency": 52.85711693763733,
+      "error": null
+    },
+    {
+      "scenario": "wallet_balance",
+      "success": true,
+      "tool_calls": [
+        "get_wallet_balance"
+      ],
+      "latency": 16.09622883796692,
+      "error": null
+    },
+    {
+      "scenario": "service_discovery",
+      "success": true,
+      "tool_calls": [
+        "discover_x402_services"
+      ],
+      "latency": 52.549317836761475,
+      "error": null
+    },
+    {
+      "scenario": "402_detection",
+      "success": false,
+      "tool_calls": [
+        "real_x402_request",
+        "check_payment_policy"
+      ],
+      "latency": 47.79175686836243,
+      "error": null
+    },
+    {
+      "scenario": "payment_flow",
+      "success": true,
+      "tool_calls": [
+        "http_request",
+        "check_payment_policy",
+        "web3_payment",
+        "http_request"
+      ],
+      "latency": 56.0947790145874,
+      "error": null
+    },
+    {
+      "scenario": "wallet_balance",
+      "success": true,
+      "tool_calls": [
+        "get_wallet_balance"
+      ],
+      "latency": 15.809014797210693,
+      "error": null
+    },
+    {
+      "scenario": "service_discovery",
+      "success": true,
+      "tool_calls": [
+        "discover_x402_services"
+      ],
+      "latency": 53.652588844299316,
+      "error": null
+    }
+  ],
+  "summary": {
+    "402_detection": {
+      "success_rate": "1/3",
+      "avg_latency": 46.7,
+      "latency_range": [
+        44.3,
+        48.1
+      ]
+    },
+    "payment_flow": {
+      "success_rate": "3/3",
+      "avg_latency": 51.3,
+      "latency_range": [
+        45.1,
+        56.1
+      ]
+    },
+    "wallet_balance": {
+      "success_rate": "3/3",
+      "avg_latency": 14.6,
+      "latency_range": [
+        11.9,
+        16.1
+      ]
+    },
+    "service_discovery": {
+      "success_rate": "3/3",
+      "avg_latency": 85.7,
+      "latency_range": [
+        52.5,
+        151.0
+      ]
+    }
+  }
+}

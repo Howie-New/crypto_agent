@@ -204,6 +204,52 @@ def generate_video():
     return response, 402
 
 
+@app.route("/api/services", methods=["GET"])
+def list_services():
+    """List all available paid services and their pricing"""
+    port = os.getenv("MOCK_SERVICE_PORT", "5000")
+    base = f"http://localhost:{port}"
+    return jsonify(
+        {
+            "services": [
+                {
+                    "name": "premium_article",
+                    "description": SERVICES["premium_article"]["description"],
+                    "price": SERVICES["premium_article"]["price"],
+                    "currency": SERVICES["premium_article"]["currency"],
+                    "method": "GET",
+                    "endpoint": f"{base}/api/article/<article_id>",
+                    "example_ids": [
+                        "quantum-2026",
+                        "blockchain-privacy",
+                        "ai-agent-survey",
+                    ],
+                },
+                {
+                    "name": "image_generation",
+                    "description": SERVICES["image_generation"]["description"],
+                    "price": SERVICES["image_generation"]["price"],
+                    "currency": SERVICES["image_generation"]["currency"],
+                    "method": "POST",
+                    "endpoint": f"{base}/api/generate/image",
+                    "body": {"prompt": "your image description"},
+                },
+                {
+                    "name": "video_generation",
+                    "description": SERVICES["video_generation"]["description"],
+                    "price": SERVICES["video_generation"]["price"],
+                    "currency": SERVICES["video_generation"]["currency"],
+                    "method": "POST",
+                    "endpoint": f"{base}/api/generate/video",
+                    "body": {"prompt": "your video description"},
+                },
+            ],
+            "merchant_address": MERCHANT_ADDRESS,
+            "note": "All endpoints return HTTP 402 without valid payment proof.",
+        }
+    ), 200
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint"""
@@ -216,6 +262,7 @@ if __name__ == "__main__":
     port = int(os.getenv("MOCK_SERVICE_PORT", "5000"))
     print(f"🚀 Starting x402 Mock Service on http://localhost:{port}")
     print("Available endpoints:")
+    print("  GET  /api/services          - List all paid services (free)")
     print("  GET  /api/article/<id>      - Premium article (0.5 USDC)")
     print("  POST /api/generate/image    - AI image (0.8 USDC)")
     print("  POST /api/generate/video    - AI video (5.0 USDC)")

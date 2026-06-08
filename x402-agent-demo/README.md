@@ -12,7 +12,8 @@
 
 - **x402 协议** - 基于 HTTP 402 状态码的 Web3 支付标准
 - **MCP (Model Context Protocol)** - Anthropic 推出的 AI 工具调用协议
-- **Claude AI** - 强大的大语言模型，具备工具调用能力
+- **多模型支持** - Claude API / OMLX 本地模型（Qwen3-Coder、Qwen3.6）/ Ollama（Gemma 3）
+- **双界面** - 终端交互 + Chainlit Web UI
 
 ### 核心能力
 
@@ -60,18 +61,18 @@
 
 ```
 x402-agent-demo/
-├── src/x402_agent_demo/     # 主包
-├── mock-service/             # Mock x402 付费服务
-│   └── app.py               # Flask API
-├── mcp-server/              # MCP Server (工具提供者)
-│   └── server.py            # MCP 工具实现
 ├── agent-client/            # AI Agent 客户端
-│   └── agent.py             # Claude Agent
-├── setup.py                 # 快速设置脚本
+│   └── agent.py             # Agent 核心（LLMProvider + MCP Client + 支付策略）
+├── mcp-server/              # MCP Server (工具提供者)
+│   └── server.py            # 6 个 MCP 工具实现
+├── mock-service/            # Mock x402 付费服务
+│   └── app.py               # Flask API（3 个付费端点 + 服务列表）
 ├── run_mock_service.py      # 启动 Mock 服务
-├── run_agent.py             # 启动 Agent
+├── run_agent.py             # 启动终端 Agent
+├── chainlit_app.py          # Chainlit Web UI
+├── setup.py                 # 快速设置脚本
 ├── .env.example             # 环境变量模板
-├── pyproject.toml           # 项目配置
+├── pyproject.toml           # 项目配置（uv 管理）
 └── README.md                # 本文档
 ```
 
@@ -129,60 +130,107 @@ OPENAI_MODEL=your_local_model_id
 
 ### 3. 启动服务
 
-**终端 1 - 启动 Mock x402 服务**
+需要三个终端窗口：
+
+**终端 1 — Mock x402 服务**
 
 ```bash
 uv run python run_mock_service.py
+# 默认端口由 .env 中 MOCK_SERVICE_PORT 决定（默认 5000）
 ```
 
-服务默认运行在 `http://localhost:5000`。如果 `.env` 中设置了 `MOCK_SERVICE_PORT`，以该端口为准。
-
-**终端 2 - 启动 AI Agent**
+**终端 2 — 终端交互 Agent**
 
 ```bash
 uv run python run_agent.py
 ```
 
+**终端 3 — Chainlit Web UI**
+
+```bash
+uv run chainlit run chainlit_app.py --host 127.0.0.1 --port 7860
+# 浏览器打开 http://127.0.0.1:7860
+```
+
+> 如果本地模型通过代理访问有问题，在命令前加 `NO_PROXY="*"`。
+
 ---
 
-## 💡 使用示例
+## 💡 演示用例
 
-### 场景 1: 自动支付（小额）
+以下用例可直接复制粘贴到 Chainlit Web UI 或终端 Agent 中执行。端口号请根据 `.env` 中的 `MOCK_SERVICE_PORT` 调整（下文以 5050 为例）。
 
-```
-👤 You: 帮我获取这篇文章 http://localhost:${MOCK_SERVICE_PORT:-5000}/api/article/quantum-2026
-
-🔧 Tool Call: http_request
-   检测到 HTTP 402 付费墙
-   价格: 0.5 USDC (低于 1.0 USDC 自动批准额度)
-
-🔧 Tool Call: web3_payment
-   ✅ 自动批准支付 0.5 USDC
-
-🤖 Agent: 已为您获取这篇关于量子计算的付费文章...
-```
-
-### 场景 2: 需要用户确认（大额）
+### 1. 查看钱包余额
 
 ```
-👤 You: 生成一段 4K 风景视频
-
-🔧 Tool Call: http_request
-   检测到需要 5.0 USDC
-
-🔧 Tool Call: check_payment_policy
-   超过自动批准额度，需要用户确认
-
-💰 PAYMENT APPROVAL REQUIRED
-Amount: 5.0 USDC
-Description: AI-Generated 10s 4K Video
-Recipient: 0x742d35Cc...
-
-Approve payment? (yes/no): yes
-
-✅ Payment executed
-🤖 Agent: 视频生成完成！
+查看当前 Agent 钱包余额，说明可用资金情况。
 ```
+
+预期：Agent 调用 `get_wallet_balance`，返回 ETH 和 USDC 余额。
+
+### 2. 发现本地可用付费服务
+
+```
+访问 http://localhost:5050/api/services 查看有哪些付费服务可用，列出每个服务的名称、价格和调用方式。
+```
+
+预期：Agent 调用 `http_request`，返回 3 个付费端点（文章 0.5 USDC、图片 0.8 USDC、视频 5.0 USDC）。
+
+### 3. 402 检测 — 只探测不支付
+
+```
+访问 http://localhost:5050/api/article/quantum-2026 ，只告诉我返回了什么状态码和支付要求信息，不要执行支付。
+```
+
+预期：Agent 调用 `http_request`，检测到 HTTP 402，展示金额、收款地址、challenge 等支付信息。
+
+### 4. 支付策略检查
+
+```
+检查 0.5 USDC 和 5.0 USDC 两个金额分别是否需要用户审批，说明自动支付阈值。
+```
+
+预期：Agent 调用 `check_payment_policy` 两次，0.5 USDC 自动批准，5.0 USDC 需要人工确认。
+
+### 5. 小额自动支付完整闭环（核心场景）
+
+```
+获取付费文章 http://localhost:5050/api/article/quantum-2026 ，如果需要支付就自动完成并展示文章内容。
+```
+
+预期：Agent 依次调用 `http_request`（检测 402）→ `web3_payment`（模拟支付 0.5 USDC）→ `http_request`（携带凭证重试获取内容）。
+
+### 6. 大额支付触发人工确认
+
+```
+请访问 http://localhost:5050/api/generate/video 生成一段4K视频，POST请求body为 {"prompt": "cyberpunk city at night"}。如果需要支付就按流程处理。
+```
+
+预期：Agent 检测到 5.0 USDC 超出自动批准额度，提示用户确认支付。
+
+### 7. 发现真实 x402 服务（Coinbase Bazaar）
+
+```
+搜索真实的 x402 付费服务，关键词 "crypto price data"，最多返回 5 条，列出每个服务的名称、URL和价格。
+```
+
+预期：Agent 调用 `discover_x402_services`，从 Coinbase x402 Bazaar 返回真实服务列表。
+
+### 8. 真实 x402 端点探测（Dry-run）
+
+```
+用 real_x402_request 工具探测 https://api.brianknows.org/api/v0/agent/knowledge 这个真实 x402 端点，解析它的支付要求（EIP-712 签名结构、金额、收款链），不要实际支付。
+```
+
+预期：Agent 调用 `real_x402_request`，展示真实 HTTP 402 支付要求结构（accepts、paymentRequirements 等）。
+
+### 9. 多步骤组合任务
+
+```
+请完成以下任务：1) 先查询钱包余额；2) 然后访问 http://localhost:5050/api/article/quantum-2026 获取付费文章；3) 最后搜索 3 个真实 x402 服务。每一步都告诉我结果。
+```
+
+预期：Agent 按顺序执行三个子任务，展示完整的工具调用链。
 
 ---
 
@@ -192,6 +240,7 @@ Approve payment? (yes/no): yes
 
 | 端点 | 方法 | 价格 | 描述 |
 |------|------|------|------|
+| `/api/services` | GET | 免费 | 列出所有付费服务及价格 |
 | `/api/article/<id>` | GET | 0.5 USDC | 高级研究文章 |
 | `/api/generate/image` | POST | 0.8 USDC | AI 图片生成 |
 | `/api/generate/video` | POST | 5.0 USDC | AI 视频生成 |
@@ -375,12 +424,14 @@ async def handle_check_policy(arguments: dict) -> list[TextContent]:
 
 ### 后续扩展方向
 
-- [ ] 集成本地 LLM (Ollama + Llama 3)
+- [x] 集成本地 LLM（OMLX Qwen3-Coder-30B / Qwen3.6-35B、Ollama Gemma 3）
+- [x] Chainlit Web UI
+- [x] Coinbase x402 Bazaar 真实服务发现
+- [x] 真实 x402 URL dry-run 探测
 - [ ] 真实区块链交易（Sepolia 测试网）
 - [ ] 服务商白名单和黑名单
 - [ ] 会话级预算管理
 - [ ] 交易历史记录和审计
-- [ ] Web UI 界面
 - [ ] 多币种支持（ETH, USDT, USDC）
 
 ---
