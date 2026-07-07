@@ -228,3 +228,5 @@ x402-agent-demo/.pytest_cache/
 scripts/*
 
 display._question.txt
+
+CLAUDE.md
