@@ -105,6 +105,7 @@ def test_dependencies():
         ("web3", "Web3"),
         ("eth_account", "eth-account"),
         ("dotenv", "python-dotenv"),
+        ("telegram", "python-telegram-bot"),
     ]
 
     all_ok = True
@@ -150,11 +151,10 @@ def test_env_file():
             print_info("Edit .env and add your Anthropic API key")
             return False
 
-    wallet_address = os.getenv("AGENT_WALLET_ADDRESS")
-    if wallet_address and wallet_address != "your_wallet_address_here":
-        print_success(f"Agent wallet configured: {wallet_address}")
-    else:
-        print_info("Agent wallet not configured; mock/dry-run mode will use a temporary local account")
+    demo_usdc = os.getenv("DEMO_USDC_BALANCE", "10.0")
+    print_success(
+        f"Temporary in-memory wallet enabled ({demo_usdc} simulated USDC)"
+    )
 
     return True
 

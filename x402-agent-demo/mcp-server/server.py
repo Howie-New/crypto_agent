@@ -5,12 +5,12 @@ Provides tools for HTTP requests with x402 detection and Web3 wallet operations
 
 import json
 import logging
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 from urllib.parse import urlencode
 import requests
 from web3 import Web3
 from eth_account import Account
-from eth_account.messages import encode_typed_data
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -32,25 +32,16 @@ w3 = Web3(
     )
 )
 
-# Agent's wallet (loaded from env)
-AGENT_PRIVATE_KEY = os.getenv("AGENT_PRIVATE_KEY", "")
-CONFIGURED_WALLET_ADDRESS = os.getenv("AGENT_WALLET_ADDRESS", "")
-if AGENT_PRIVATE_KEY and not AGENT_PRIVATE_KEY.startswith("your_"):
-    try:
-        agent_account = Account.from_key(AGENT_PRIVATE_KEY)
-    except Exception as exc:
-        logger.warning(
-            f"⚠️  Invalid AGENT_PRIVATE_KEY, generated temporary wallet: {exc}"
-        )
-        agent_account = Account.create()
-else:
-    agent_account = Account.create()
-
-AGENT_ADDRESS = (
-    CONFIGURED_WALLET_ADDRESS
-    if CONFIGURED_WALLET_ADDRESS and not CONFIGURED_WALLET_ADDRESS.startswith("your_")
-    else agent_account.address
-)
+# The parent Agent passes only the public address. A standalone MCP process
+# creates its own temporary account. No private key is written to disk.
+configured_demo_address = os.getenv("DEMO_WALLET_ADDRESS", "").strip()
+AGENT_ADDRESS = configured_demo_address or Account.create().address
+DEMO_ETH_BALANCE = os.getenv("DEMO_ETH_BALANCE", "0.1").strip()
+DEMO_USDC_BALANCE = os.getenv("DEMO_USDC_BALANCE", "10.0").strip()
+if not Web3.is_address(AGENT_ADDRESS):
+    raise RuntimeError(
+        "DEMO_WALLET_ADDRESS must be a valid Ethereum address"
+    )
 logger.warning(f"⚠️  Demo wallet address: {AGENT_ADDRESS}")
 
 # Payment policy
@@ -63,6 +54,17 @@ ALLOW_REAL_X402_PAYMENT = (
     os.getenv("ALLOW_REAL_X402_PAYMENT", "false").strip().lower() == "true"
 )
 DEFAULT_REQUEST_TIMEOUT = float(os.getenv("X402_REQUEST_TIMEOUT", "15"))
+USDC_ASSETS = {
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+    "epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v",
+}
+NETWORK_NAMES = {
+    "eip155:8453": "Base",
+    "eip155:137": "Polygon",
+    "eip155:42161": "Arbitrum",
+    "solana:5eykt4usfv8p8njdtrepy1vzqkqzkvdp": "Solana",
+}
 
 
 class PaymentAdapter:
@@ -102,7 +104,6 @@ class MockPaymentAdapter(PaymentAdapter):
             "currency": currency,
             "challenge": challenge,
             "description": description,
-            "note": "⚠️ This is a simulated transaction for demo purposes",
         }
 
 
@@ -149,6 +150,90 @@ def parse_json_body(response: requests.Response) -> Any:
         return response.json()
     except ValueError:
         return None
+
+
+def normalize_payment_option(option: dict) -> dict:
+    """Keep only model-relevant payment fields from a Bazaar accept entry."""
+    raw_amount = str(option.get("amount", ""))
+    asset = str(option.get("asset", ""))
+    extra = option.get("extra") if isinstance(option.get("extra"), dict) else {}
+    asset_name = str(extra.get("name", ""))
+    is_usdc = asset.lower() in USDC_ASSETS or asset_name.lower() == "usd coin"
+
+    amount = raw_amount
+    currency = "USDC" if is_usdc else (asset_name or asset)
+    if is_usdc:
+        try:
+            amount = format(Decimal(raw_amount) / Decimal(1_000_000), "f")
+            amount = amount.rstrip("0").rstrip(".") or "0"
+        except InvalidOperation:
+            amount = raw_amount
+
+    network_id = str(option.get("network", ""))
+    return {
+        "amount": amount,
+        "currency": currency,
+        "network": NETWORK_NAMES.get(network_id.lower(), network_id),
+        "network_id": network_id,
+        "scheme": option.get("scheme"),
+    }
+
+
+def compact_discovery_results(payload: Any, limit: int) -> tuple[list[dict], int | None]:
+    """Reduce verbose Bazaar resources to bounded service summaries."""
+    if isinstance(payload, list):
+        items = payload
+        total = len(payload)
+    elif isinstance(payload, dict):
+        items = (
+            payload.get("items")
+            or payload.get("resources")
+            or payload.get("results")
+            or []
+        )
+        pagination = payload.get("pagination") or {}
+        total = pagination.get("total") if isinstance(pagination, dict) else None
+    else:
+        return [], None
+
+    services = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+
+        options = []
+        seen_options = set()
+        for option in item.get("accepts") or []:
+            if not isinstance(option, dict):
+                continue
+            normalized = normalize_payment_option(option)
+            option_key = (
+                normalized["amount"],
+                normalized["currency"],
+                normalized["network_id"],
+                normalized["scheme"],
+            )
+            if option_key in seen_options:
+                continue
+            seen_options.add(option_key)
+            options.append(normalized)
+            if len(options) >= 5:
+                break
+
+        services.append(
+            {
+                "name": item.get("serviceName")
+                or item.get("name")
+                or item.get("title")
+                or "Unnamed service",
+                "url": item.get("resource") or item.get("url"),
+                "description": truncate_text(str(item.get("description", "")), 300),
+                "type": item.get("type"),
+                "x402_version": item.get("x402Version"),
+                "payment_options": options,
+            }
+        )
+    return services, total
 
 
 def extract_x402_payment_requirements(response: requests.Response) -> dict:
@@ -329,7 +414,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_wallet_balance",
-            description="Get wallet balance in ETH and USDC",
+            description="Get current ETH/USDC balances and session payment history",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -485,10 +570,9 @@ async def handle_get_balance(arguments: dict) -> list[TextContent]:
         balance_info = {
             "address": address,
             "balances": {
-                "ETH": "0.1",  # Simulated
-                "USDC": "100.0",  # Simulated
+                "ETH": DEMO_ETH_BALANCE,
+                "USDC": DEMO_USDC_BALANCE,
             },
-            "note": "⚠️ Simulated balances for demo",
         }
 
         return json_response(balance_info)
@@ -537,15 +621,26 @@ async def handle_discover_x402_services(arguments: dict) -> list[TextContent]:
         response = requests.get(url, timeout=DEFAULT_REQUEST_TIMEOUT)
         parsed = parse_json_body(response)
 
+        if not response.ok:
+            return json_response(
+                {
+                    "status": "error",
+                    "source": "coinbase_x402_bazaar",
+                    "status_code": response.status_code,
+                    "error": parsed
+                    if parsed is not None
+                    else truncate_text(response.text),
+                }
+            )
+
+        services, total = compact_discovery_results(parsed, limit)
         result = {
-            "status": "success" if response.ok else "error",
+            "status": "success",
             "source": "coinbase_x402_bazaar",
             "query": query,
-            "limit": limit,
-            "request_url": url,
-            "status_code": response.status_code,
-            "content": parsed if parsed is not None else truncate_text(response.text),
-            "note": "Discovery only. This tool does not make payments.",
+            "returned": len(services),
+            "total": total,
+            "services": services,
         }
         return json_response(result)
 

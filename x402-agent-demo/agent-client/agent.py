@@ -8,14 +8,18 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from contextlib import AsyncExitStack
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Awaitable, Callable
 
 import requests
 from anthropic import Anthropic
 from dotenv import load_dotenv
+from eth_account import Account
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -28,7 +32,8 @@ load_dotenv(PROJECT_ROOT / ".env")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
 MAX_AUTO_APPROVE_AMOUNT = float(os.getenv("MAX_AUTO_APPROVE_AMOUNT", "1.0"))
 MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "8"))
-AGENT_WALLET = os.getenv("AGENT_WALLET_ADDRESS", "Not configured")
+DEMO_WALLET_ACCOUNT = Account.create()
+AGENT_WALLET = DEMO_WALLET_ACCOUNT.address
 
 
 @dataclass
@@ -58,6 +63,82 @@ class AgentEvent:
 
 
 AgentEventHandler = Callable[[AgentEvent], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class PaymentApprovalRequest:
+    """Provider-neutral request for explicit user approval."""
+
+    id: str
+    amount: float
+    description: str
+    recipient: str
+
+
+PaymentApprovalHandler = Callable[[PaymentApprovalRequest], Awaitable[bool]]
+
+
+def decimal_text(value: Decimal) -> str:
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") or "0"
+
+
+@dataclass
+class WalletState:
+    """In-memory wallet balance and payment ledger for one UI session."""
+
+    address: str = AGENT_WALLET
+    eth_balance: Decimal = field(
+        default_factory=lambda: Decimal(os.getenv("DEMO_ETH_BALANCE", "0.1"))
+    )
+    usdc_balance: Decimal = field(
+        default_factory=lambda: Decimal(os.getenv("DEMO_USDC_BALANCE", "10.0"))
+    )
+    payment_history: list[dict] = field(default_factory=list)
+
+    def can_pay(self, amount: float, currency: str) -> bool:
+        return currency.upper() == "USDC" and self.usdc_balance >= Decimal(str(amount))
+
+    def record_payment(
+        self,
+        *,
+        amount: float,
+        currency: str,
+        recipient: str,
+        description: str,
+        status: str,
+        tx_hash: str | None = None,
+    ) -> None:
+        amount_value = Decimal(str(amount))
+        if status == "success" and currency.upper() == "USDC":
+            self.usdc_balance -= amount_value
+
+        self.payment_history.append(
+            {
+                "id": uuid.uuid4().hex,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "description": description,
+                "recipient": recipient,
+                "amount": decimal_text(amount_value),
+                "currency": currency.upper(),
+                "status": status,
+                "tx_hash": tx_hash,
+                "balance_after": {
+                    "ETH": decimal_text(self.eth_balance),
+                    "USDC": decimal_text(self.usdc_balance),
+                },
+            }
+        )
+
+    def snapshot(self) -> dict:
+        return {
+            "address": self.address,
+            "balances": {
+                "ETH": decimal_text(self.eth_balance),
+                "USDC": decimal_text(self.usdc_balance),
+            },
+            "payment_history": list(self.payment_history),
+        }
 
 
 class AnthropicProvider:
@@ -352,14 +433,14 @@ def create_llm_provider():
     raise RuntimeError(f"Unsupported LLM_PROVIDER: {LLM_PROVIDER}")
 
 
-def get_user_approval(amount: float, description: str, recipient: str) -> bool:
-    """Request user approval for payment"""
+def get_user_approval(request: PaymentApprovalRequest) -> bool:
+    """Request payment approval from the CLI."""
     print("\n" + "=" * 60)
     print("💰 PAYMENT APPROVAL REQUIRED")
     print("=" * 60)
-    print(f"Amount: {amount} USDC")
-    print(f"Description: {description}")
-    print(f"Recipient: {recipient}")
+    print(f"Amount: {request.amount} USDC")
+    print(f"Description: {request.description}")
+    print(f"Recipient: {request.recipient}")
     print(f"Max auto-approve limit: {MAX_AUTO_APPROVE_AMOUNT} USDC")
     print("=" * 60)
 
@@ -373,17 +454,28 @@ def get_user_approval(amount: float, description: str, recipient: str) -> bool:
             print("Please enter 'yes' or 'no'")
 
 
+async def cli_payment_approval(request: PaymentApprovalRequest) -> bool:
+    """Run the blocking CLI prompt without blocking the event loop."""
+    return await asyncio.to_thread(get_user_approval, request)
+
+
 class X402Agent:
     """AI Agent with x402 payment capability"""
 
-    def __init__(self, event_handler: AgentEventHandler | None = None):
+    def __init__(
+        self,
+        event_handler: AgentEventHandler | None = None,
+        approval_handler: PaymentApprovalHandler | None = None,
+        wallet_state: WalletState | None = None,
+    ):
         self.conversation_history = []
-        self.pending_payment = None
         self.exit_stack = AsyncExitStack()
         self.mcp_session = None
         self.tools = []
         self.llm = create_llm_provider()
         self.event_handler = event_handler
+        self.approval_handler = approval_handler
+        self.wallet_state = wallet_state or WalletState()
 
     async def _emit(self, event_type: str, payload: dict):
         if self.event_handler:
@@ -395,6 +487,7 @@ class X402Agent:
 
         env = os.environ.copy()
         env.setdefault("UV_CACHE_DIR", "/tmp/uv-cache")
+        env["DEMO_WALLET_ADDRESS"] = AGENT_WALLET
         server_params = StdioServerParameters(
             command="uv",
             args=[
@@ -486,11 +579,26 @@ class X402Agent:
 
     async def _call_mcp_tool(self, tool_name: str, tool_input: dict) -> dict:
         """Call a tool through the MCP session."""
+        if tool_name == "get_wallet_balance":
+            return self.wallet_state.snapshot()
         if self.mcp_session is None:
             raise RuntimeError("MCP server is not connected")
 
         result = await self.mcp_session.call_tool(tool_name, tool_input)
-        return self._parse_mcp_result(result)
+        parsed = self._parse_mcp_result(result)
+        if (
+            tool_name == "web3_payment"
+            and parsed.get("status") == "success"
+        ):
+            self.wallet_state.record_payment(
+                amount=float(tool_input["amount"]),
+                currency=tool_input.get("currency", "USDC"),
+                recipient=tool_input["recipient"],
+                description=tool_input.get("description", "Payment"),
+                status="success",
+                tx_hash=parsed.get("tx_hash"),
+            )
+        return parsed
 
     def _create_system_prompt(self) -> str:
         """Create system prompt for the agent"""
@@ -499,7 +607,7 @@ class X402Agent:
 You have access to the following tools:
 1. http_request - Make HTTP requests to any URL. This tool will automatically detect if a service requires payment (HTTP 402 status).
 2. web3_payment - Execute cryptocurrency payments to unlock paid content.
-3. get_wallet_balance - Check your wallet balance.
+3. get_wallet_balance - Check current wallet balances and session payment history.
 4. check_payment_policy - Check if a payment requires user approval.
 5. discover_x402_services - Discover real x402 services from Coinbase x402 Bazaar. This does not pay.
 6. real_x402_request - Probe a real x402 URL and parse payment requirements. This is dry-run only.
@@ -574,14 +682,77 @@ Your wallet address: {wallet}
 
                 if tool_name == "web3_payment":
                     amount = float(tool_input["amount"])
+                    currency = tool_input.get("currency", "USDC")
+                    description = tool_input.get("description", "Payment")
+                    recipient = tool_input["recipient"]
+                    if not self.wallet_state.can_pay(amount, currency):
+                        self.wallet_state.record_payment(
+                            amount=amount,
+                            currency=currency,
+                            recipient=recipient,
+                            description=description,
+                            status="insufficient_funds",
+                        )
+                        tool_result = {
+                            "status": "error",
+                            "error": "Insufficient wallet balance",
+                            "balances": self.wallet_state.snapshot()["balances"],
+                        }
+                        await self._emit(
+                            "tool_result",
+                            {
+                                "id": tool_call.id,
+                                "name": tool_name,
+                                "result": tool_result,
+                            },
+                        )
+                        tool_results.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps(tool_result),
+                            }
+                        )
+                        continue
+
                     if amount > MAX_AUTO_APPROVE_AMOUNT:
-                        approved = get_user_approval(
-                            amount,
-                            tool_input.get("description", "Payment"),
-                            tool_input["recipient"],
+                        approval_request = PaymentApprovalRequest(
+                            id=uuid.uuid4().hex,
+                            amount=amount,
+                            description=description,
+                            recipient=recipient,
+                        )
+                        await self._emit(
+                            "payment_approval_required",
+                            {
+                                "id": approval_request.id,
+                                "amount": approval_request.amount,
+                                "description": approval_request.description,
+                                "recipient": approval_request.recipient,
+                            },
+                        )
+                        approved = False
+                        if self.approval_handler is not None:
+                            approved = await self.approval_handler(approval_request)
+                        await self._emit(
+                            "payment_approval_resolved",
+                            {
+                                "id": approval_request.id,
+                                "approved": approved,
+                            },
                         )
                         if not approved:
-                            tool_result = {"error": "Payment rejected by user"}
+                            self.wallet_state.record_payment(
+                                amount=amount,
+                                currency=currency,
+                                recipient=recipient,
+                                description=description,
+                                status="rejected",
+                            )
+                            tool_result = {
+                                "status": "rejected",
+                                "error": "Payment rejected by user",
+                            }
                             await self._emit(
                                 "tool_result",
                                 {
@@ -645,7 +816,7 @@ async def run_agent():
     print("=" * 60)
 
     try:
-        agent = X402Agent()
+        agent = X402Agent(approval_handler=cli_payment_approval)
     except Exception as e:
         print(f"\n❌ Error initializing LLM provider: {e}")
         sys.exit(1)
