@@ -9,15 +9,15 @@ cd x402-agent-demo
 uv sync
 ```
 
-### 2. 生成配置文件
+### 2. 创建配置文件
 
 ```bash
 uv run python setup.py
 ```
 
 这将：
-- 自动生成一个测试用的 ETH 钱包
 - 创建 `.env` 配置文件
+- 启动时在内存中生成临时 Ethereum 密钥对，并提供 10 USDC 演示余额
 
 ### 3. 配置模型 API
 
@@ -63,6 +63,22 @@ uv run python test_system.py
 ```bash
 uv run python run_agent.py
 ```
+
+也可以启动 Telegram 私聊版本：
+
+```env
+TELEGRAM_BOT_TOKEN=123456:your_bot_token
+TELEGRAM_ALLOWED_USER_IDS=123456789
+TELEGRAM_APPROVAL_TIMEOUT_SECONDS=300
+```
+
+```bash
+uv run python telegram_bot.py
+```
+
+Telegram 版本使用 Long Polling，不需要公网地址。当前仅支持白名单私聊用户；
+大额支付会显示“批准支付”和“拒绝支付”按钮。成功支付会更新当前会话余额和
+支付记录；使用 `/new` 会重置对话与钱包账本。
 
 ## 使用示例
 
@@ -188,6 +204,8 @@ x402-agent-demo/
 ├── setup.py                # 初始化脚本
 ├── run_mock_service.py     # 启动 Mock 服务
 ├── run_agent.py            # 启动 Agent
+├── telegram_bot.py         # Telegram 私聊入口
+├── telegram_channel/       # Telegram 会话与审批适配
 ├── test_system.py          # 系统测试
 │
 ├── mock-service/           # 模拟的 x402 付费服务
@@ -215,7 +233,7 @@ x402-agent-demo/
 
 - 不会产生真实的区块链交易
 - 真实 x402 工具目前只做 dry-run，不会签名或付款
-- 测试钱包不要存入真实资金
+- 演示钱包没有项目保存的私钥，不要用于真实资金
 - 生产环境需要真实的交易验证
 
 ## 获取帮助

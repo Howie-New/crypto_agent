@@ -13,7 +13,7 @@
 - **x402 协议** - 基于 HTTP 402 状态码的 Web3 支付标准
 - **MCP (Model Context Protocol)** - Anthropic 推出的 AI 工具调用协议
 - **多模型支持** - Claude API / OMLX 本地模型（Qwen3-Coder、Qwen3.6）/ Ollama（Gemma 3）
-- **双界面** - 终端交互 + Chainlit Web UI
+- **三种交互方式** - 终端 + Chainlit Web UI + Telegram 私聊 Bot
 
 ### 核心能力
 
@@ -70,6 +70,8 @@ x402-agent-demo/
 ├── run_mock_service.py      # 启动 Mock 服务
 ├── run_agent.py             # 启动终端 Agent
 ├── chainlit_app.py          # Chainlit Web UI
+├── telegram_bot.py          # Telegram 私聊 Bot
+├── telegram_channel/        # Telegram 会话、事件和支付审批适配
 ├── setup.py                 # 快速设置脚本
 ├── .env.example             # 环境变量模板
 ├── pyproject.toml           # 项目配置（uv 管理）
@@ -100,7 +102,7 @@ uv sync
 ### 2. 配置环境
 
 ```bash
-# 运行设置脚本（会自动生成测试钱包和 .env 文件）
+# 运行设置脚本（会从安全的演示模板创建 .env 文件）
 uv run python setup.py
 ```
 
@@ -151,6 +153,30 @@ uv run python run_agent.py
 uv run chainlit run chainlit_app.py --host 127.0.0.1 --port 7860
 # 浏览器打开 http://127.0.0.1:7860
 ```
+
+**可选终端 4 — Telegram 私聊 Bot**
+
+先在 `.env` 中配置：
+
+```env
+TELEGRAM_BOT_TOKEN=123456:your_bot_token
+TELEGRAM_ALLOWED_USER_IDS=123456789
+TELEGRAM_APPROVAL_TIMEOUT_SECONDS=300
+```
+
+`TELEGRAM_ALLOWED_USER_IDS` 必须填写数字用户 ID，多个 ID 使用逗号分隔。
+向 Bot 发送一条消息后，可在启动 Long Polling 之前通过 Telegram Bot API
+的 `getUpdates` 响应查看 `message.from.id`。
+
+```bash
+uv run python telegram_bot.py
+```
+
+Telegram Demo 仅支持私聊。发送 `/new` 可清空会话，发送 `/status` 可查看
+模型、钱包、支付阈值和任务状态。
+
+钱包余额与支付记录按当前聊天会话保存在内存中。成功支付会扣减 USDC，
+拒绝支付和余额不足不会扣款；`/new` 会同时重置对话、余额和支付账本。
 
 > 如果本地模型通过代理访问有问题，在命令前加 `NO_PROXY="*"`。
 
@@ -276,9 +302,9 @@ curl http://localhost:5000/api/article/test-123 \
 # 免密支付额度（USDC）
 MAX_AUTO_APPROVE_AMOUNT=1.0
 
-# 钱包配置
-AGENT_WALLET_ADDRESS=0x...
-AGENT_PRIVATE_KEY=0x...
+# 模拟钱包配置（不需要真实钱包或私钥）
+DEMO_ETH_BALANCE=0.1
+DEMO_USDC_BALANCE=10.0
 
 # Web3 RPC (Sepolia 测试网)
 WEB3_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/demo
@@ -297,8 +323,8 @@ X402_REQUEST_TIMEOUT=15
 
 1. **本项目仅用于演示和研究**
 2. 默认支付交易都是**模拟的**，不会产生真实链上交易
-3. 不要在测试钱包中存入真实资金
-4. 不要将私钥提交到代码仓库
+3. 每次启动会随机生成临时密钥对，私钥仅驻留内存且不会写入配置
+4. 本地演示不应配置或保存任何真实钱包私钥
 5. `real_x402_request` 只做 dry-run 探测，不会签名或付款
 6. 生产环境需要：
    - 真实的区块链交易验证
